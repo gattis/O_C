@@ -390,9 +390,7 @@ public:
 
   inline void Update(uint32_t triggers, DAC_CHANNEL dac_channel) {
     
-    bool forced_update = force_update_;
     uint8_t index = channel_index_;
-    force_update_ = false;
 
     ChannelSource source = get_source();
     ChannelTriggerSource trigger_source = get_trigger_source();
@@ -422,7 +420,7 @@ public:
     bool update = continuous || triggered;
     
     if (update)
-      update_scale(forced_update, schedule_mask_rotate_);
+      update_scale(force_update_, schedule_mask_rotate_);
 
     int32_t sample = last_sample_;
     int32_t temp_sample = 0;
@@ -699,7 +697,7 @@ public:
             int32_t transpose = get_transpose() + prev_transpose_cv_;
             int octave = get_octave() + prev_octave_cv_;
             int root = get_root() + prev_root_cv_;
-            
+
             int32_t pitch = quantizer_.enabled()
                 ? OC::ADC::raw_pitch_value(static_cast<ADC_CHANNEL>(source))
                 : OC::ADC::pitch_value(static_cast<ADC_CHANNEL>(source));
@@ -753,7 +751,7 @@ public:
               int _aux_cv = 0;
 
               if (index != source) {
-                  
+     
                   switch(_aux_cv_destination) {
                     
                     case QQ_DEST_NONE:
@@ -761,7 +759,7 @@ public:
                     case QQ_DEST_TRANSPOSE:
                       _aux_cv = (OC::ADC::value(static_cast<ADC_CHANNEL>(index)) * 12 + 2047) >> 12;
                       if (_aux_cv != prev_transpose_cv_) {
-                          transpose += _aux_cv;
+                          transpose = get_transpose() + _aux_cv;
                           CONSTRAIN(transpose, -12, 12); 
                           prev_transpose_cv_ = _aux_cv;
                           _re_quantize = true;
@@ -770,7 +768,7 @@ public:
                     case QQ_DEST_ROOT:
                       _aux_cv = (OC::ADC::value(static_cast<ADC_CHANNEL>(index)) * 12 + 2047) >> 12;
                       if (_aux_cv != prev_root_cv_) {
-                          root += _aux_cv;
+                          root = get_root() + _aux_cv;
                           CONSTRAIN(root, 0, 11);
                           prev_root_cv_ = _aux_cv;
                           _re_quantize = true;
@@ -779,35 +777,37 @@ public:
                     case QQ_DEST_OCTAVE:
                       _aux_cv = (OC::ADC::value(static_cast<ADC_CHANNEL>(index)) * 12 + 2047) >> 12;
                       if (_aux_cv != prev_octave_cv_) {
-                          octave += _aux_cv;
+                          octave = get_octave() + _aux_cv;
                           CONSTRAIN(octave, -4, 4);
                           prev_octave_cv_ = _aux_cv;
                           _re_quantize = true;
                       }
                     break;   
                     case QQ_DEST_MASK:
-                     // hack ahead -- update mask next time
-                    schedule_mask_rotate_ = (OC::ADC::value(static_cast<ADC_CHANNEL>(index)) + 127) >> 8;
+                      schedule_mask_rotate_ = (OC::ADC::value(static_cast<ADC_CHANNEL>(index)) + 127) >> 8;
+                      update_scale(force_update_, schedule_mask_rotate_);
                     break;
                     default:
                     break; 
                   } 
                   // end switch
               }
-              
+                
               // offset when TR source = continuous ?
+              int8_t _trigger_offset = 0;
+              bool _trigger_update = false;
               if (OC::DigitalInputs::read_immediate(static_cast<OC::DigitalInput>(index))) {
-                 continuous_offset_ = (trigger_source == CHANNEL_TRIGGER_CONTINUOUS_UP) ? 1 : -1;
+                 _trigger_offset = (trigger_source == CHANNEL_TRIGGER_CONTINUOUS_UP) ? 1 : -1;
               }
-              else 
-                 continuous_offset_  = 0;
-              
+              if (_trigger_offset != continuous_offset_)
+                 _trigger_update = true;
+              continuous_offset_ = _trigger_offset;
+                 
               // run quantizer again -- presumably could be made more efficient...
               if (_re_quantize) 
                 quantized = quantizer_.Process(pitch, root << 7, transpose);
-              if (_re_quantize || continuous_offset_ )
+              if (_re_quantize || _trigger_update) 
                 sample = OC::DAC::pitch_to_dac(dac_channel, quantized, octave + continuous_offset_);
-              
             } 
             // end special treatment
                  
@@ -845,6 +845,8 @@ public:
 
   void update_scale_mask(uint16_t mask, uint16_t dummy) {
     apply_value(CHANNEL_SETTING_MASK, mask); // Should automatically be updated
+    last_mask_ = mask;
+    force_update_ = true;
   }
   //
 
@@ -1058,7 +1060,8 @@ private:
   OC::vfx::ScrollingHistory<int32_t, 5> scrolling_history_;
 
   bool update_scale(bool force, int32_t mask_rotate) {
-    
+
+    force_update_ = false;
     const int scale = get_scale(DUMMY);
     uint16_t mask = get_mask();
 
@@ -1408,10 +1411,9 @@ void QQ_leftButtonLong() {
 }
 
 void QQ_downButtonLong() {
-   /*
-   for (int i = 0; i < 4; ++i) 
-      quantizer_channels[i].instant_update();
-   */   
+  
+  QuantizerChannel &selected_channel = quantizer_channels[qq_state.selected_channel];
+  selected_channel.update_scale_mask(0xFFFF, 0x0);
 }
 
 int32_t history[5];
